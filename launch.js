@@ -10,6 +10,30 @@ const ZERO = '0x0000000000000000000000000000000000000000', Z32 = '0x' + '0'.repe
 const V6 = 'function newTokenV6((string name, string symbol, string meta, uint8 dexThresh, bytes32 salt, uint8 migratorType, address quoteToken, uint256 quoteAmt, address beneficiary, bytes permitData, bytes32 extensionID, bytes extensionData, uint8 dexId, uint8 lpFeeProfile, uint16 buyTaxRate, uint16 sellTaxRate, uint64 taxDuration, uint64 antiFarmerDuration, uint16 mktBps, uint16 deflationBps, uint16 dividendBps, uint16 lpBps, uint256 minimumShareBalance, address dividendToken, address commissionReceiver, uint8 tokenVersion) params) payable returns (address)';
 const TOKEN_CREATED = 'event TokenCreated(uint256 ts, address creator, uint256 nonce, address token, string name, string symbol, string meta)';
 const ERC20 = ['function decimals() view returns (uint8)', 'function balanceOf(address) view returns (uint256)', 'function allowance(address,address) view returns (uint256)', 'function approve(address,uint256) returns (bool)'];
+
+// ---------- chain access: reads, simulations and gas estimates go through public BSC RPCs (with fallback),
+// the wallet is only asked to sign. Some wallets' own RPCs drop revert data, which made calls fail blindly.
+const RO = {}; let roIdx = 0;
+const prov = i => RO[i] || (RO[i] = new E.JsonRpcProvider(C.rpcUrls[i], 56, { staticNetwork: true }));
+const isRevert = e => !!e && (e.code === 'CALL_EXCEPTION' || /revert/i.test(String(e.shortMessage || e.message || '')));
+async function withRead(fn) {
+  let err;
+  for (let k = 0; k < C.rpcUrls.length; k++) {
+    const i = (roIdx + k) % C.rpcUrls.length;
+    try { const r = await fn(prov(i)); roIdx = i; return r; } catch (e) { err = e; if (isRevert(e)) throw e; }
+  }
+  throw err;
+}
+// send a contract call from the wallet, with gas estimated on a public RPC (+30%)
+async function sendTx(c, fn, args, ov = {}, from) {
+  let gasLimit;
+  try { const g = await withRead(r => c.connect(r)[fn].estimateGas(...args, { ...ov, from })); gasLimit = g * 13n / 10n; } catch (e) { if (isRevert(e)) throw e; }
+  return c[fn](...args, gasLimit ? { ...ov, gasLimit } : ov);
+}
+async function waitTx(tx) {
+  try { const rc = await withRead(r => r.waitForTransaction(tx.hash, 1, 240000)); if (rc) return rc; } catch {}
+  return tx.wait();
+}
 const ERR = {
   '0x9a5c8a92': 'This stock is not allowed as a pair by the contract (QuoteTokenNotAllowed).',
   '0xb07f6501': 'This stock is not configured as a pair on the contract (InvalidQuoteTokenConfiguration).',
@@ -46,6 +70,7 @@ function decodeErr(e) {
   const m = String((e && (e.shortMessage || e.reason || e.message)) || e).match(/0x[0-9a-fA-F]{8}/);
   if (m && ERR[m[0].toLowerCase()]) return ERR[m[0].toLowerCase()];
   if (e && (e.code === 'ACTION_REJECTED' || e.code === 4001)) return 'You rejected the request in your wallet.';
+  if (/missing revert data/i.test(String(e && (e.shortMessage || e.message)))) return 'The contract rejected it without a reason. Check your balance and that this stock can be paired, then retry.';
   return String((e && (e.shortMessage || e.reason || e.message)) || e).slice(0, 220);
 }
 
@@ -142,15 +167,17 @@ async function launchOne(f, stock, log) {
   let quoteAmt = 0n;
   if (f.buy && Number(f.buy) > 0) {
     const erc = new E.Contract(quote, ERC20, signer);
-    const dec = await erc.decimals();
-    quoteAmt = E.parseUnits(String(f.buy), dec);
-    const bal = await erc.balanceOf(account);
-    if (bal < quoteAmt) throw new Error(`Not enough ${stock.t} in your wallet for the initial buy.`);
-    const al = await erc.allowance(account, L.portal);
+    let dec, bal, al;
+    try {
+      dec = await withRead(r => erc.connect(r).decimals());
+      quoteAmt = E.parseUnits(String(f.buy), dec);
+      [bal, al] = await withRead(r => Promise.all([erc.connect(r).balanceOf(account), erc.connect(r).allowance(account, L.portal)]));
+    } catch (e) { console.warn('[Stockz] read', stock.t, e); throw new Error(`Could not read your ${stock.t} balance on BNB Chain. Please retry.`); }
+    if (bal < quoteAmt) throw new Error(`Not enough ${stock.t} for the initial buy. You have ${E.formatUnits(bal, dec)} ${stock.t}.`);
     if (al < quoteAmt) {
       log(`Approve exactly ${f.buy} ${stock.t} for the initial buy (confirm in wallet)…`);
-      const atx = await erc.approve(L.portal, quoteAmt);
-      const arc = await atx.wait();
+      const atx = await sendTx(erc, 'approve', [L.portal, quoteAmt], {}, account);
+      const arc = await waitTx(atx);
       if (!arc || arc.status !== 1) throw new Error('Approval failed.');
     }
   }
@@ -175,12 +202,12 @@ async function launchOne(f, stock, log) {
   if (taxed) log(`Tax: ${T.buy / 100}% buy · ${T.sell / 100}% sell`);
   const portal = new E.Contract(L.portal, [V6, TOKEN_CREATED], signer);
   log('Simulating the launch (nothing is sent yet)…');
-  try { await portal.newTokenV6.staticCall(params, { value }); }
+  try { await withRead(r => portal.connect(r).newTokenV6.staticCall(params, { value, from: account })); }
   catch (e) { throw new Error('Simulation failed, nothing was sent: ' + decodeErr(e)); }
   log('Confirm the launch in your wallet…');
-  const tx = await portal.newTokenV6(params, { value });
+  const tx = await sendTx(portal, 'newTokenV6', [params], { value }, account);
   log(`Sent: <a href="${esc(C.explorer)}/tx/${esc(tx.hash)}" target="_blank" rel="noopener noreferrer">${esc(tx.hash.slice(0, 12))}…</a> waiting for confirmation…`, true);
-  const rc = await tx.wait();
+  const rc = await waitTx(tx);
   if (!rc || rc.status !== 1) throw new Error('The transaction failed on-chain.');
   let token = null;
   for (const lg of rc.logs || []) {
@@ -193,19 +220,36 @@ async function launchOne(f, stock, log) {
 // ---------- UI ----------
 const STOCKS = () => C.stockTokens || [];
 let mode = 'single', busy = false;
-function stockOptions(sel) { return STOCKS().map(s => `<option value="${esc(s.t)}"${s.t === sel ? ' selected' : ''}>${esc(s.t)}</option>`).join(''); }
+// stock picker: pixel tiles coloured like each stock's plot on the map, with search
+const PAL = ['#e8b04a', '#6fae5a', '#d9774b', '#5c8fc7', '#b56bb0', '#4fb3a6', '#c9a36b', '#d65c6d', '#8a9a3e', '#7a7fd1'];
+const stockName = t => { const x = (window.FLAP_STOCKS || []).find(s => s.t === t); return (x && x.n) || ''; };
+const stockCol = (t, i) => { const m = window.StockzStockMeta && window.StockzStockMeta(t); return (m && m.col) || PAL[i % PAL.length]; };
+let picked = new Set();
 function renderPairs(preset) {
-  const box = $('#lmPairs');
-  if (mode === 'single') {
-    box.innerHTML = `<label>Pair with<select id="lmStock" required>${stockOptions(preset && preset[0])}</select></label>
-      <label>Initial buy (optional, in the paired stock)<input id="lmBuy" inputmode="decimal" placeholder="0" pattern="^\\d*(\\.\\d+)?$"></label>`;
-  } else {
-    const on = new Set(preset || []);
-    box.innerHTML = `<div class="mnote">Multi-pair launches your token once per stock you pick, with the same name, ticker and image. Every pair is a real on-chain pair, and you confirm one transaction per stock.</div>
-      <label class="chk"><input type="checkbox" id="lmAll"> All stocks (${STOCKS().length})</label>
-      <div class="pick" id="lmPick">${STOCKS().map(s => `<label class="chk"><input type="checkbox" class="lmOne" value="${esc(s.t)}"${on.has(s.t) ? ' checked' : ''}> ${esc(s.t)}</label>`).join('')}</div>`;
-    $('#lmAll').onchange = e => document.querySelectorAll('.lmOne').forEach(x => x.checked = e.target.checked);
-  }
+  const box = $('#lmPairs'), multi = mode === 'multi';
+  picked = new Set(multi ? (preset || []) : (preset && preset[0] ? [preset[0]] : []));
+  box.innerHTML = `${multi ? '<div class="mnote">Same name, ticker and image on every stock you pick. One wallet confirmation per stock.</div>' : ''}
+    <div class="spk">
+      <div class="spk-head"><span class="spk-lbl">${multi ? 'Pair with (pick several)' : 'Pair with'}</span><span class="spk-sel" id="spkSel"></span></div>
+      <div class="spk-bar"><input id="spkQ" placeholder="Search ${STOCKS().length} stocks…" autocomplete="off" spellcheck="false" aria-label="Search stocks">${multi ? '<button type="button" class="spk-all" id="spkAll">ALL</button>' : ''}</div>
+      <div class="spk-grid" id="spkGrid" role="listbox" aria-multiselectable="${multi}">${STOCKS().map((s, i) => `<button type="button" class="spk-t" role="option" data-t="${esc(s.t)}" style="--c:${stockCol(s.t, i)}"><i></i><b>${esc(s.t)}</b><small>${esc(stockName(s.t) || 'Tokenized stock')}</small></button>`).join('')}</div>
+    </div>
+    ${multi ? '' : '<label>Initial buy (optional, in the paired stock)<input id="lmBuy" inputmode="decimal" placeholder="0" autocomplete="off"></label>'}`;
+  const sync = () => {
+    box.querySelectorAll('.spk-t').forEach(b => { const on = picked.has(b.dataset.t); b.classList.toggle('on', on); b.setAttribute('aria-selected', on); });
+    const n = picked.size, one = [...picked][0];
+    $('#spkSel').innerHTML = !n ? '<em>none yet</em>' : multi ? `<b>${n}</b> picked` : `<b>${esc(one)}</b> ${esc(stockName(one))}`;
+    const all = $('#spkAll'); if (all) all.classList.toggle('on', n === STOCKS().length);
+  };
+  $('#spkGrid').onclick = e => {
+    const b = e.target.closest('.spk-t'); if (!b) return; const t = b.dataset.t;
+    if (multi) { picked.has(t) ? picked.delete(t) : picked.add(t); } else picked = new Set([t]);
+    sync();
+  };
+  $('#spkQ').oninput = () => { const q = $('#spkQ').value.trim().toLowerCase(); box.querySelectorAll('.spk-t').forEach(b => { b.hidden = !!q && !(b.dataset.t.toLowerCase().includes(q) || stockName(b.dataset.t).toLowerCase().includes(q)); }); };
+  if (multi) $('#spkAll').onclick = () => { picked = picked.size === STOCKS().length ? new Set() : new Set(STOCKS().map(s => s.t)); sync(); };
+  sync();
+  const first = box.querySelector('.spk-t.on'); if (first) first.scrollIntoView({ block: 'nearest' });
 }
 function setMode(m, preset) { mode = m; $('#lmSingle').classList.toggle('on', m === 'single'); $('#lmMulti').classList.toggle('on', m === 'multi'); renderPairs(preset); }
 function log(msg, html) { const li = document.createElement('li'); if (html) li.innerHTML = msg; else li.textContent = msg; $('#lmLog').appendChild(li); li.scrollIntoView({ block: 'nearest' }); return li; }
@@ -228,11 +272,12 @@ function readForm() {
   for (const k of ['website', 'twitter', 'telegram']) if (f[k] && !/^https?:\/\/\S+$/i.test(f[k])) throw new Error(`${k === 'twitter' ? 'X' : k[0].toUpperCase() + k.slice(1)} link must start with https://`);
   let picks;
   if (mode === 'single') {
-    picks = [$('#lmStock').value];
+    picks = [...picked];
+    if (!picks.length) throw new Error('Pick a stock to pair with.');
     f.buy = ($('#lmBuy').value || '').trim();
     if (f.buy && !/^\d*(\.\d+)?$/.test(f.buy)) throw new Error('Initial buy must be a number.');
   } else {
-    picks = [...document.querySelectorAll('.lmOne:checked')].map(x => x.value);
+    picks = [...picked];
     if (!picks.length) throw new Error('Pick at least one stock.');
     f.buy = '';
   }
@@ -310,6 +355,7 @@ window.addEventListener('stockz:privy', e => {
 });
 if (window.ethereum && window.ethereum.on) window.ethereum.on('accountsChanged', a => { account = null; signer = null; const b = $('#connect'); if (b) { b.textContent = 'Connect wallet'; b.classList.remove('on'); } });
 window.StockzLaunch = { open, _findSalt: findSalt };
+window.StockzChain = { withRead, sendTx, waitTx, decodeErr, isRevert };
 window.StockzWallet = {
   async connect() { await connect(); showAcct(); window.dispatchEvent(new Event('stockz:wallet')); return { signer, account, provider }; },
   state() { return { signer, account, provider }; }

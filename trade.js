@@ -6,18 +6,8 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>'
 const QUOTE = 'function quoteExactInput((address inputToken, address outputToken, uint256 inputAmount) params) returns (uint256 outputAmount)';
 const SWAP = 'function swapExactInput((address inputToken, address outputToken, uint256 inputAmount, uint256 minOutputAmount, bytes permitData) params) payable returns (uint256 outputAmount)';
 const ERC20 = ['function decimals() view returns (uint8)', 'function balanceOf(address) view returns (uint256)', 'function allowance(address,address) view returns (uint256)', 'function approve(address,uint256) returns (bool)'];
-// read-only providers with fallback across all configured RPCs
-const RO = {}; let roIdx = 0;
-const prov = i => RO[i] || (RO[i] = new E.JsonRpcProvider(C.rpcUrls[i], 56, { staticNetwork: true }));
-async function withRead(fn) {
-  let err;
-  for (let k = 0; k < C.rpcUrls.length; k++) {
-    const i = (roIdx + k) % C.rpcUrls.length;
-    try { const r = await fn(prov(i)); roIdx = i; return r; }
-    catch (e) { err = e; if (e && (e.code === 'CALL_EXCEPTION' || /revert/i.test(String(e.message)))) throw e; }
-  }
-  throw err;
-}
+const CH = () => window.StockzChain;
+const withRead = fn => CH().withRead(fn);
 const fmt = (v, d) => { const n = Number(E.formatUnits(v, d)); return n === 0 ? '0' : n < 0.0001 ? n.toExponential(3) : n.toLocaleString('en-US', { maximumFractionDigits: n < 1 ? 6 : 4 }); };
 const short = e => String((e && (e.shortMessage || e.reason || e.message)) || e).slice(0, 160);
 
@@ -78,19 +68,19 @@ function mount(box, t) {
       const bal = await withRead(r => new E.Contract(p.inT, ERC20, r).balanceOf(account));
       if (bal < a) throw new Error(`Not enough ${p.inSym}.`);
       const erc = new E.Contract(p.inT, ERC20, signer);
-      if ((await erc.allowance(account, PORTAL)) < a) {
+      if ((await withRead(r => erc.connect(r).allowance(account, PORTAL))) < a) {
         b.innerHTML = '<i>…</i> Approve in wallet'; msg(`Approving exactly ${esc($('#trAmt').value)} ${esc(p.inSym)}…`);
-        const atx = await erc.approve(PORTAL, a); const arc = await atx.wait(); if (!arc || arc.status !== 1) throw new Error('Approval failed.');
+        const atx = await CH().sendTx(erc, 'approve', [PORTAL, a], {}, account); const arc = await CH().waitTx(atx); if (!arc || arc.status !== 1) throw new Error('Approval failed.');
       }
       const fresh = await withRead(r => new E.Contract(PORTAL, [QUOTE], r).quoteExactInput.staticCall({ inputToken: p.inT, outputToken: p.outT, inputAmount: a }));
       const params = { inputToken: p.inT, outputToken: p.outT, inputAmount: a, minOutputAmount: fresh * BigInt(10000 - slip) / 10000n, permitData: '0x' };
       const portal = new E.Contract(PORTAL, [SWAP], signer);
       b.innerHTML = '<i>…</i> Simulating';
-      try { await portal.swapExactInput.staticCall(params, { value: 0n }); } catch (e) { throw new Error('Simulation failed, nothing was sent. ' + short(e)); }
+      try { await withRead(r => portal.connect(r).swapExactInput.staticCall(params, { value: 0n, from: account })); } catch (e) { throw new Error('Simulation failed, nothing was sent. ' + CH().decodeErr(e)); }
       b.innerHTML = '<i>…</i> Confirm in wallet';
-      const tx = await portal.swapExactInput(params, { value: 0n });
+      const tx = await CH().sendTx(portal, 'swapExactInput', [params], { value: 0n }, account);
       b.innerHTML = '<i>…</i> Confirming';
-      const rc = await tx.wait(); if (!rc || rc.status !== 1) throw new Error('The trade failed on-chain.');
+      const rc = await CH().waitTx(tx); if (!rc || rc.status !== 1) throw new Error('The trade failed on-chain.');
       msg(`Done. <a href="${esc(C.explorer)}/tx/${esc(tx.hash)}" target="_blank" rel="noopener noreferrer">View on BscScan</a>`, true);
       $('#trAmt').value = ''; lastQuote = null; $('#trOut').textContent = '–'; $('#trMin').textContent = '–';
     } catch (e) {

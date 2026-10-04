@@ -337,6 +337,7 @@ vp.addEventListener('pointerdown', e => { if (e.target.closest('[data-id]')) ret
 vp.addEventListener('pointermove', e => { if (!drag) return; vp.scrollLeft = drag.l - (e.clientX - drag.x); vp.scrollTop = drag.t - (e.clientY - drag.y); });
 const endDrag = () => { drag = null; vp.classList.remove('drag'); }; vp.addEventListener('pointerup', endDrag); vp.addEventListener('pointercancel', endDrag);
 
+window.StockzStockMeta = t => { const L = LOTS.find(l => l.s.t === t); return L ? { col: L.col, land: L.land } : null; };
 // ---------- search: custom pixel list, coloured like each stock's plot ----------
 { const inp = $('#find'), ul = $('#findList');
   const meta = t => { const L = LOTS.find(l => l.s.t === t); return L ? { col: L.col, land: L.land } : { col: '#cdd2d8', land: '' }; };
