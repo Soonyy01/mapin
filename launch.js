@@ -162,6 +162,24 @@ async function uploadMeta(f) {
   return j.cid;
 }
 
+// initial buy as a normal Portal swap right after the launch (5% slippage guard, simulated first)
+async function buyRightAfter(quote, token, amt, stock, f, log) {
+  const Q = 'function quoteExactInput((address inputToken, address outputToken, uint256 inputAmount) params) returns (uint256 outputAmount)';
+  const S = 'function swapExactInput((address inputToken, address outputToken, uint256 inputAmount, uint256 minOutputAmount, bytes permitData) params) payable returns (uint256 outputAmount)';
+  const erc = new E.Contract(quote, ERC20, signer);
+  const al = await withRead(r => erc.connect(r).allowance(account, L.portal));
+  if (al < amt) { log(`Approve exactly ${f.buy} ${stock.t} for the buy (confirm in wallet)…`); const a = await sendTx(erc, 'approve', [L.portal, amt], {}, account); const ar = await waitTx(a); if (!ar || ar.status !== 1) throw new Error('Approval failed.'); }
+  const out = await withRead(r => new E.Contract(L.portal, [Q], r).quoteExactInput.staticCall({ inputToken: quote, outputToken: token, inputAmount: amt }));
+  const params = { inputToken: quote, outputToken: token, inputAmount: amt, minOutputAmount: out * 9500n / 10000n, permitData: '0x' };
+  const portal = new E.Contract(L.portal, [S], signer);
+  await withRead(r => portal.connect(r).swapExactInput.staticCall(params, { value: 0n, from: account }));
+  log(`Confirm the initial buy of ${f.buy} ${stock.t} in your wallet…`);
+  const tx = await sendTx(portal, 'swapExactInput', [params], { value: 0n }, account);
+  const rc = await waitTx(tx);
+  if (!rc || rc.status !== 1) throw new Error('The buy failed on-chain.');
+  log(`Initial buy done: <a href="${esc(C.explorer)}/tx/${esc(tx.hash)}" target="_blank" rel="noopener noreferrer">${esc(tx.hash.slice(0, 12))}…</a>`, true);
+}
+
 async function launchOne(f, stock, log) {
   const quote = E.getAddress(stock.address);
   let quoteAmt = 0n;
@@ -201,9 +219,20 @@ async function launchOne(f, stock, log) {
   const value = taxed ? BigInt(L.taxErc20Value) : 0n;
   if (taxed) log(`Tax: ${T.buy / 100}% buy · ${T.sell / 100}% sell`);
   const portal = new E.Contract(L.portal, [V6, TOKEN_CREATED], signer);
+  const sim = p => withRead(r => portal.connect(r).newTokenV6.staticCall(p, { value, from: account }));
   log('Simulating the launch (nothing is sent yet)…');
-  try { await withRead(r => portal.connect(r).newTokenV6.staticCall(params, { value, from: account })); }
-  catch (e) { throw new Error('Simulation failed, nothing was sent: ' + decodeErr(e)); }
+  let buyAfter = 0n;
+  try { await sim(params); }
+  catch (e) {
+    console.warn('[Stockz] launch simulation:', e);
+    if (!(quoteAmt > 0n)) throw new Error('Simulation failed, nothing was sent: ' + decodeErr(e));
+    // the initial buy inside the launch was rejected: check the launch alone, then buy right after it
+    const plain = { ...params, quoteAmt: 0n };
+    try { await sim(plain); }
+    catch (e2) { console.warn('[Stockz] launch simulation without buy:', e2); throw new Error('Simulation failed, nothing was sent: ' + decodeErr(e2)); }
+    log(`The initial buy can't run inside the launch for ${stock.t}, so Stockz launches first and buys right after.`);
+    params.quoteAmt = 0n; buyAfter = quoteAmt;
+  }
   log('Confirm the launch in your wallet…');
   const tx = await sendTx(portal, 'newTokenV6', [params], { value }, account);
   log(`Sent: <a href="${esc(C.explorer)}/tx/${esc(tx.hash)}" target="_blank" rel="noopener noreferrer">${esc(tx.hash.slice(0, 12))}…</a> waiting for confirmation…`, true);
@@ -214,7 +243,12 @@ async function launchOne(f, stock, log) {
     if ((lg.address || '').toLowerCase() !== L.portal.toLowerCase()) continue;
     try { const p = portal.interface.parseLog(lg); if (p && p.name === 'TokenCreated') token = p.args.token; } catch {}
   }
-  return { tx: tx.hash, token: token || address, fromEvent: !!token };
+  const tokenAddr = token || address;
+  if (buyAfter > 0n) {
+    try { await buyRightAfter(quote, tokenAddr, buyAfter, stock, f, log); }
+    catch (e) { console.warn('[Stockz] buy after launch:', e); log(`⚠ Token launched, but the initial buy did not go through: ${decodeErr(e)} You can buy it from its building on the map.`); }
+  }
+  return { tx: tx.hash, token: tokenAddr, fromEvent: !!token };
 }
 
 // ---------- UI ----------
