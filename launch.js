@@ -374,24 +374,61 @@ function toast(msg, kind = 'err') {
   setTimeout(() => { t.classList.add('bye'); setTimeout(() => t.remove(), 400); }, 5000);
 }
 window.StockzToast = toast;
-const showAcct = () => { const b = $('#connect'); if (b && account) { b.textContent = account.slice(0, 6) + '…' + account.slice(-4); b.classList.add('on'); } window.dispatchEvent(new Event('stockz:wallet')); };
+const showAcct = () => { const b = $('#connect'); if (b && account) { b.textContent = account.slice(0, 6) + '…' + account.slice(-4) + ' ▾'; b.classList.add('on'); } window.dispatchEvent(new Event('stockz:wallet')); };
 const cb = $('#connect');
-if (cb) cb.onclick = async () => {
+// ---------- wallet menu: balances, copy, BscScan, disconnect ----------
+const resetBtn = () => { if (cb) { cb.textContent = 'Connect wallet'; cb.classList.remove('on'); } };
+function closeMenu() { const m = document.getElementById('wmenu'); if (m) m.remove(); document.removeEventListener('pointerdown', outside, true); }
+function outside(e) { const m = document.getElementById('wmenu'); if (m && !m.contains(e.target) && e.target !== cb) closeMenu(); }
+async function disconnect() {
+  closeMenu();
   const P = window.StockzPrivy;
-  if (account && P && P.authenticated) { try { await P.logout(); } catch {} account = null; signer = null; cb.textContent = 'Connect wallet'; cb.classList.remove('on'); return; }
+  if (P && P.authenticated) { try { await P.logout(); } catch {} }
+  try { if (provider) await provider.send('wallet_revokePermissions', [{ eth_accounts: {} }]); } catch {}
+  account = null; signer = null; provider = null; resetBtn();
+  window.dispatchEvent(new Event('stockz:wallet'));
+}
+async function openMenu() {
+  closeMenu();
+  const m = document.createElement('div'); m.id = 'wmenu'; m.className = 'wmenu bev'; m.setAttribute('role', 'menu');
+  const a = account;
+  m.innerHTML = `<div class="wm-addr"><span class="wm-dot"></span><b>${esc(a.slice(0, 6) + '…' + a.slice(-4))}</b><button type="button" class="wm-copy" id="wmCopy">COPY</button></div>
+    <div class="wm-bal"><span>BNB</span><b id="wmBnb">…</b></div>
+    <div class="wm-sub">Your stocks</div><div class="wm-stocks" id="wmStocks"><span class="wm-muted">Reading…</span></div>
+    <div class="wm-btns"><a class="btn" href="${esc(C.explorer)}/address/${esc(a)}" target="_blank" rel="noopener noreferrer">BscScan</a><button type="button" class="btn wm-out" id="wmOut">Disconnect</button></div>`;
+  document.body.appendChild(m);
+  const r = cb.getBoundingClientRect();
+  m.style.top = (r.bottom + 6) + 'px'; m.style.right = Math.max(8, innerWidth - r.right) + 'px';
+  m.querySelector('#wmOut').onclick = disconnect;
+  m.querySelector('#wmCopy').onclick = async e => { try { await navigator.clipboard.writeText(a); e.target.textContent = 'COPIED'; } catch { e.target.textContent = a; } };
+  setTimeout(() => document.addEventListener('pointerdown', outside, true), 0);
+  const nf = (v, d) => { const n = Number(E.formatUnits(v, d)); return n === 0 ? '0' : n < 0.0001 ? '<0.0001' : n.toLocaleString('en-US', { maximumFractionDigits: n < 1 ? 6 : 4 }); };
+  try { const b = await withRead(p => p.getBalance(a)); const el = document.getElementById('wmBnb'); if (el) el.textContent = nf(b, 18); }
+  catch { const el = document.getElementById('wmBnb'); if (el) el.textContent = '–'; }
+  try {
+    const list = STOCKS();
+    const res = await withRead(p => Promise.all(list.map(s => { const c = new E.Contract(s.address, ERC20, p); return Promise.all([c.balanceOf(a), c.decimals()]).catch(() => [0n, 18]); })));
+    const held = list.map((s, i) => ({ t: s.t, v: res[i][0], d: Number(res[i][1]) })).filter(x => x.v > 0n);
+    const el = document.getElementById('wmStocks'); if (!el) return;
+    el.innerHTML = held.length ? held.map((x, i) => `<div class="wm-row"><i style="background:${stockCol(x.t, i)}"></i><span>${esc(x.t)}</span><b>${nf(x.v, x.d)}</b></div>`).join('') : '<span class="wm-muted">No stock tokens yet</span>';
+  } catch { const el = document.getElementById('wmStocks'); if (el) el.innerHTML = '<span class="wm-muted">Could not read right now</span>'; }
+}
+if (cb) cb.onclick = async () => {
+  if (account) { document.getElementById('wmenu') ? closeMenu() : openMenu(); return; }
   const prev = cb.textContent; cb.disabled = true; cb.textContent = 'Loading…';
   try { connecting = true; await connect(); showAcct(); } catch (e) { cb.textContent = prev; console.warn('[Stockz] connect:', decodeErr(e)); } finally { cb.disabled = false; connecting = false; }
 };
 window.addEventListener('stockz:privy', e => {
   const d = e.detail || {};
-  if (account && !d.address) { account = null; signer = null; cb.textContent = 'Connect wallet'; cb.classList.remove('on'); return; }
+  if (account && !d.address && !connecting) { account = null; signer = null; closeMenu(); resetBtn(); window.dispatchEvent(new Event('stockz:wallet')); return; }
   if (!account && d.address && d.authenticated && !connecting) { connecting = true; connect().then(showAcct).catch(() => {}).finally(() => { connecting = false; }); }
 });
-if (window.ethereum && window.ethereum.on) window.ethereum.on('accountsChanged', a => { account = null; signer = null; const b = $('#connect'); if (b) { b.textContent = 'Connect wallet'; b.classList.remove('on'); } });
+if (window.ethereum && window.ethereum.on) window.ethereum.on('accountsChanged', a => { account = null; signer = null; closeMenu(); resetBtn(); window.dispatchEvent(new Event('stockz:wallet')); });
 window.StockzLaunch = { open, _findSalt: findSalt };
 window.StockzChain = { withRead, sendTx, waitTx, decodeErr, isRevert };
 window.StockzWallet = {
   async connect() { await connect(); showAcct(); window.dispatchEvent(new Event('stockz:wallet')); return { signer, account, provider }; },
-  state() { return { signer, account, provider }; }
+  state() { return { signer, account, provider }; },
+  disconnect
 };
 })();

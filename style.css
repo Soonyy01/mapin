@@ -384,3 +384,20 @@ body.lock{overflow:hidden}
   .spk-head,.spk-sel{font-size:15px}.spk-sel b{font-size:10px}
 }
 .spk-t{font-family:V,monospace}.spk-t small{font-family:V,monospace}
+
+/* wallet menu */
+.wmenu{position:fixed;z-index:60;width:280px;max-width:calc(100vw - 16px);padding:10px;background:#e9e4d6;font-size:18px;box-shadow:4px 4px 0 #000}
+.wm-addr{display:flex;align-items:center;gap:8px;padding-bottom:8px;border-bottom:2px dashed #b8b2a2}
+.wm-addr b{font:12px Silk;flex:1}
+.wm-dot{width:10px;height:10px;background:#3fbf6a;box-shadow:0 0 0 2px #000}
+.wm-copy{font:10px Silk;padding:3px 7px;cursor:pointer;background:#fff;border:2px solid;border-color:var(--hi) var(--lo) var(--lo) var(--hi)}
+.wm-bal{display:flex;justify-content:space-between;align-items:baseline;margin:10px 0 6px;padding:8px 10px;background:#1d1a16;color:#f3ead0;border:3px solid;border-color:var(--lo) var(--hi) var(--hi) var(--lo)}
+.wm-bal span{font:11px Silk;color:var(--gold)}.wm-bal b{font:16px Silk;color:#fff}
+.wm-sub{font:10px Silk;letter-spacing:1px;color:#5a544a;margin:8px 0 4px}
+.wm-stocks{max-height:150px;overflow:auto;display:grid;gap:3px}
+.wm-row{display:grid;grid-template-columns:12px 1fr auto;gap:7px;align-items:center;padding:3px 4px;background:#fff;border:2px solid #000}
+.wm-row i{width:10px;height:16px;box-shadow:0 0 0 2px #000}.wm-row span{font:10px Silk}.wm-row b{font-size:17px;font-weight:normal}
+.wm-muted{color:#8a8f96;font-size:16px}
+.wm-btns{display:flex;gap:6px;margin-top:10px}.wm-btns .btn{flex:1;text-align:center;font-size:15px;padding:6px 4px}
+.wm-out{background:#f0a8a8}
+@media (max-width:899px){.wmenu{width:250px;font-size:15px}.wm-bal b{font-size:13px}}
