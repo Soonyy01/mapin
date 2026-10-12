@@ -19,7 +19,6 @@ export function Header() {
           </Link>
           <nav className="header-nav" aria-label="Main">
             <Link href="/" aria-current={onMap ? "page" : undefined}>Map</Link>
-            <Link href="/explore" aria-current={pathname.startsWith("/explore") ? "page" : undefined}>Markets</Link>
           </nav>
           <div className="header-actions">
             <ConnectButton />

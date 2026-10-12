@@ -1,10 +1,5 @@
-import { Suspense } from "react";
-import { MapHome } from "@/components/map/MapHome";
+import { CountryHome } from "@/components/countries/CountryHome";
 
 export default function HomePage() {
-  return (
-    <Suspense fallback={<div className="map-home" />}>
-      <MapHome />
-    </Suspense>
-  );
+  return <CountryHome />;
 }
