@@ -1,7 +1,9 @@
 // Public (browser-safe) configuration. Only NEXT_PUBLIC_* values may appear here, and they must
 // be referenced literally so Next.js can inline them at build time.
 
-export const PUBLIC_APP_URL = (process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000").replace(/\/+$/, "");
+export const PUBLIC_APP_URL = (
+  process.env.NEXT_PUBLIC_APP_URL || (process.env.NODE_ENV === "production" ? "https://mapinpad.fun" : "http://localhost:3000")
+).replace(/\/+$/, "");
 
 /** Official Robinhood Chain public endpoint is the fallback. */
 export const PUBLIC_RPC_URL = process.env.NEXT_PUBLIC_RPC_URL || "https://rpc.mainnet.chain.robinhood.com";

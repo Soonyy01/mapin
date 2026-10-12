@@ -1,21 +1,20 @@
 import Image from "next/image";
 
-/** The mapin wordmark (public/mapin-logo.png, the supplied treasure-map artwork). */
+/** The mapin mark (public/mapin-logo.png: yellow map mark on a dark rounded tile, square). */
 export function Logo({ height = 40, priority = false, className }: {
   height?: number;
   priority?: boolean;
   className?: string;
 }) {
-  const ratio = 1000 / 372;
   return (
     <Image
       src="/mapin-logo.png"
       alt="mapin"
-      width={Math.round(height * ratio)}
+      width={height}
       height={height}
       priority={priority}
       className={className}
-      style={{ height, width: "auto", borderRadius: 4 }}
+      style={{ height, width: height }}
     />
   );
 }

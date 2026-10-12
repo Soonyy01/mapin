@@ -9,7 +9,7 @@ const optionalString = z.preprocess(emptyToUndefined, z.string().optional());
 const optionalUrl = z.preprocess(emptyToUndefined, z.url().optional());
 
 const schema = z.object({
-  NEXT_PUBLIC_APP_URL: z.preprocess(emptyToUndefined, z.url().default("http://localhost:3000")),
+  NEXT_PUBLIC_APP_URL: z.preprocess(emptyToUndefined, z.url().default(process.env.NODE_ENV === "production" ? "https://mapinpad.fun" : "http://localhost:3000")),
   SESSION_SECRET: optionalString,
   DATABASE_URL: optionalString,
   DATABASE_SSL: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false")),
