@@ -79,7 +79,9 @@ contract MapinLaunchpad is Ownable2Step, ReentrancyGuard, Pausable {
     address[] private _countries;
 
     uint256 public currencyVirtualEth = 1.5 ether; // ~4.4 ETH raised to graduate
-    uint256 public countryVirtualQuote = 30_000_000 ether; // in currency-token units
+    // In currency-token units. 100M => a country graduates after ~293M currency tokens are raised
+    // (about 0.57 ETH at a fresh currency price). 30M was far too small: 0.2 ETH graduated a country.
+    uint256 public countryVirtualQuote = 100_000_000 ether;
     uint256 public feeBps = 100; // 1%
     address public feeRecipient;
 
